@@ -1,0 +1,13 @@
+@import "tailwindcss";
+
+@theme {
+  --color-refumo-orange: #FF6400;
+  --color-refumo-orange-hover: #FF751A;
+  --color-refumo-orange-dark: #CC5000;
+  --color-refumo-orange-light: #FF8533;
+}
+
+:root {
+  --refumo-primary: #FF6400;
+}
+

@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ASSEDGE</title><link rel="stylesheet" href="panel.css"></head>
+<body>
+<section class="toolbar"><button id="sam-settings-toggle" type="button" aria-controls="hermes-settings" aria-expanded="false">Settings</button><button id="refresh" disabled>Refresh</button><button id="disconnect" disabled>Disconnect</button></section>
+<p id="message" role="status" aria-live="polite">Loading assets…</p>
+
+<form id="search-form"><label for="search">Search assets</label><div class="search-row"><input id="search" type="search" placeholder="Name, place, email, keyword…" autocomplete="off"><button id="search-submit" type="submit">Search</button></div></form>
+<div class="filters"><select id="type" aria-label="Filter by type" disabled><option value="">All types</option></select><select id="status" aria-label="Filter by status" disabled><option value="">All statuses</option></select></div>
+<details id="hermes-settings" hidden><summary>Sam AI connection</summary><label for="hermes-token">Webhook token</label><input id="hermes-token" type="password" autocomplete="off" placeholder="Paste your X-Gitlab-Token"><button id="save-hermes" type="button">Save token</button><button id="check-hermes" type="button">Check saved token</button><button id="clear-hermes" type="button">Clear token</button><p id="hermes-connection-status" role="status">Token is saved on this device until you clear it. It is not included in shared extension files.</p></details>
+<label for="sort">Sort by</label><select id="sort" disabled><option value="modified">Last modified — newest first</option><option value="name">Name — A–Z</option></select>
+<p id="count"></p><main id="results"></main><button id="more" hidden>Show more</button>
+<script type="module" src="panel.js"></script></body></html>

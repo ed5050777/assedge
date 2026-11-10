@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "ASSEDGE",
+  "version": "1.4.8",
+  "minimum_chrome_version": "116",
+  "description": "ASSEDGE for Refumo: search CRM assets and send instructions to Sam AI.",
+  "permissions": [
+    "sidePanel",
+    "identity",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://sheets.googleapis.com/*",
+    "https://nvidia-vera-rubin.tailc9ae59.ts.net/*"
+  ],
+  "action": {
+    "default_title": "Open ASSEDGE"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "panel.html"
+  },
+  "oauth2": {
+    "client_id": "843671395931-0lkde0id93v4p8f87tcoaq4u97i4vl4t.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/spreadsheets.readonly"
+    ]
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAp64bi4mv5fSIAXH9ylnrYCO0tUvd6jS69joDVIoylwBlOJPLDuDOnc6PcWnaVTOaSKKoE1FhnsF+NMphELsJFtnf4zh2xc9Y3jgf1rNcRcoBF85fel9DkqzILoHbGuFAshSP6q4570hjtPxN8RHPRuNdlILNP0+gAoUm+33GYhzynBaOoYsbS3qPEk96X7sv0oTipCd9JHFOFen6oV/Ep70r0Ubz+Siva4Ox+g/QKS5DTKU00uWunFERPPoqS500FvyemAtY/JFqYz1pbsydM0shBbuE3vsnpPRCA9EYWtTPhBV+4NKdMacNqi4yL3cCJhPFgnLPVd9VZyzEq1z2xQIDAQAB"
+}

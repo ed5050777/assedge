@@ -1,0 +1,20 @@
+{
+  "id": "/",
+  "name": "REFUMO ASSEDGE",
+  "short_name": "REFUMO",
+  "description": "REFUMO CRM asset search and Sam AI task management for web and mobile.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0F172A",
+  "theme_color": "#EA580C",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/assets/aistudio/refumo_orange_no_backround_0ec90715.png",
+      "sizes": "192x192 512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

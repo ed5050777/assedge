@@ -1,0 +1,6 @@
+{
+  "name": "REFUMO ASSEDGE",
+  "description": "REFUMO CRM asset search and Sam AI task management for web and mobile.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
