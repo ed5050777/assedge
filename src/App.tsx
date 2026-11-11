@@ -1,20 +1,17 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { User } from 'firebase/auth';
-import {
-  Header
-} from './components/Header';
+import { Header } from './components/Header';
 import { SearchBar } from './components/SearchBar';
 import { AssetCard } from './components/AssetCard';
 import { SettingsModal } from './components/SettingsModal';
 import { OfflineBanner } from './components/OfflineBanner';
-import { AssetRecord, SortMode, HermesDeliveryStatus } from './types';
+import { AssetRecord, SortMode, HermesDeliveryStatus, AssetUpdatePayload, AssetRecordData } from './types';
+import { sortRecords } from './lib/sheets';
 import {
-  fetchLiveCRMRecords,
-  sortRecords,
-  ID,
-  GID,
-  SHEET
-} from './lib/sheets';
+  fetchSQLAssets,
+  updateSQLAsset,
+  sqlRowToAssetRecord
+} from './lib/api';
 import {
   initAuth,
   googleSignIn,
@@ -33,13 +30,9 @@ import {
 } from './lib/cache';
 import { SAMPLE_RECORDS } from './lib/sampleData';
 import {
-  Sparkles,
-  Database,
-  ArrowRight,
+  ChevronDown,
   RefreshCw,
-  Search,
-  ExternalLink,
-  ChevronDown
+  Server
 } from 'lucide-react';
 
 const DRAFTS_KEY = 'refumo_instruction_drafts_v1';
@@ -50,7 +43,7 @@ export default function App() {
   const [records, setRecords] = useState<AssetRecord[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [statusMessage, setStatusMessage] = useState<string>('Loading assets…');
+  const [statusMessage, setStatusMessage] = useState<string>('Loading assets from PostgreSQL…');
   const [isLiveMode, setIsLiveMode] = useState<boolean>(true);
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
 
@@ -91,7 +84,7 @@ export default function App() {
         const sortedCached = sortRecords(cached.records, 'modified');
         setRecords(sortedCached);
         setLastUpdated(cached.timestamp || Date.now());
-        setStatusMessage(`${sortedCached.length} assets loaded.`);
+        setStatusMessage(`${sortedCached.length} assets loaded (cached).`);
         setIsLiveMode(true);
       }
     });
@@ -110,7 +103,7 @@ export default function App() {
     });
   }, []);
 
-  // Initialize Firebase Auth listener
+  // Initialize Firebase Auth listener (optional)
   useEffect(() => {
     const unsubscribe = initAuth(
       (currentUser, token) => {
@@ -127,28 +120,26 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Load CRM Data (fetches all live assets from the CRM spreadsheet)
-  const loadCRMData = useCallback(async (tokenToUse?: string | null, forceRefresh = false) => {
+  // Load CRM Data (fetches all live assets from PostgreSQL REST API)
+  const loadCRMData = useCallback(async (forceRefresh = false) => {
     setIsLoading(true);
     setErrorMessage(null);
 
-    const activeToken = tokenToUse !== undefined ? tokenToUse : getAccessToken();
-
     try {
-      setStatusMessage('Connecting to Google Sheet…');
-      const liveRecords = await fetchLiveCRMRecords(activeToken, forceRefresh);
+      setStatusMessage('Connecting to PostgreSQL database…');
+      const liveRecords = await fetchSQLAssets(5000);
       const sortedRecords = sortRecords(liveRecords, 'modified');
       setRecords(sortedRecords);
       setIsLiveMode(true);
       setErrorMessage(null);
       const now = Date.now();
       setLastUpdated(now);
-      setStatusMessage(`${sortedRecords.length} assets loaded.`);
+      setStatusMessage(`${sortedRecords.length} assets loaded from SQL.`);
 
       // Persist in IndexedDB for instant offline and reload access
       await setStoredCRMRecords(sortedRecords, now);
     } catch (err: any) {
-      console.error('Error fetching live CRM records:', err);
+      console.error('Error fetching live SQL assets:', err);
 
       // Check if we have cached records in IndexedDB
       const cached = await getStoredCRMRecords();
@@ -158,11 +149,9 @@ export default function App() {
         setLastUpdated(cached.timestamp);
         setStatusMessage(`${sortedCached.length} assets loaded from cache.`);
         setIsLiveMode(true);
-        if (!activeToken) {
-          setErrorMessage('Showing cached assets. Connect Google to sync live updates.');
-        } else {
-          setErrorMessage(err.message || 'Unable to refresh live CRM records. Showing cached assets.');
-        }
+        setErrorMessage(
+          `Unable to refresh from SQL server (${err.message || 'Network error'}). Showing cached assets.`
+        );
         return;
       }
 
@@ -170,30 +159,52 @@ export default function App() {
       const sortedSample = sortRecords(SAMPLE_RECORDS, 'modified');
       setRecords(sortedSample);
       setIsLiveMode(false);
-      setStatusMessage(`${sortedSample.length} assets loaded.`);
-      setErrorMessage(err.message || 'Unable to connect to CRM spreadsheet.');
+      setStatusMessage(`${sortedSample.length} assets loaded (Demo Mode).`);
+      setErrorMessage(`Unable to connect to PostgreSQL server: ${err.message || 'Connection failed'}`);
     } finally {
       setIsLoading(false);
     }
   }, []);
 
-  // Initial load
+  // Initial load from SQL on mount
   useEffect(() => {
-    loadCRMData(googleToken);
-  }, [googleToken, loadCRMData]);
+    loadCRMData();
+  }, [loadCRMData]);
 
-  // Google Sign In handler
+  // Update asset fields directly in PostgreSQL via PATCH /assets?asset_id=eq.<id>
+  const handleUpdateAsset = useCallback(async (assetId: string, updates: AssetUpdatePayload) => {
+    const updatedRow = await updateSQLAsset(assetId, updates);
+
+    setRecords((prev) => {
+      const next = prev.map((r) => {
+        if (r.data.asset_id === assetId) {
+          const mergedData: AssetRecordData = { ...r.data, ...updatedRow };
+          return sqlRowToAssetRecord(mergedData, r.row - 1);
+        }
+        return r;
+      });
+
+      // Update IndexedDB cache asynchronously
+      setStoredCRMRecords(next, Date.now()).catch(() => {});
+      return next;
+    });
+  }, []);
+
+  // Refresh handler
+  const handleRefresh = () => {
+    loadCRMData(true);
+  };
+
+  // Google Sign In handler (optional)
   const handleGoogleSignIn = async () => {
     setIsLoading(true);
-    setErrorMessage(null);
     try {
       const res = await googleSignIn();
       setUser(res.user);
       setGoogleTokenState(res.accessToken);
-      await loadCRMData(res.accessToken, true);
     } catch (err: any) {
       console.error('Sign-in failed:', err);
-      setErrorMessage(err.message || 'Google Sign-in failed. Please try again.');
+      setErrorMessage(err.message || 'Google Sign-in failed.');
     } finally {
       setIsLoading(false);
     }
@@ -202,17 +213,8 @@ export default function App() {
   // Google Sign Out handler
   const handleGoogleSignOut = async () => {
     await logout();
-    await clearStoredCRMRecords();
     setUser(null);
     setGoogleTokenState(null);
-    setIsLiveMode(false);
-    setRecords(SAMPLE_RECORDS);
-    setStatusMessage('Signed out. Switched to preview dataset.');
-  };
-
-  // Refresh handler
-  const handleRefresh = () => {
-    loadCRMData(googleToken, true);
   };
 
   // Toggle card expansion
@@ -370,24 +372,25 @@ export default function App() {
         onOpenSettings={() => setIsSettingsOpen(true)}
         onGoogleSignIn={handleGoogleSignIn}
         onGoogleSignOut={handleGoogleSignOut}
-        onToggleDemoMode={() => loadCRMData(googleToken, isLiveMode)}
+        onToggleDemoMode={() => loadCRMData(true)}
       />
 
-      {/* Top Banner Alert (if error or not connected to live sheet) */}
+      {/* Top Banner Alert (if error connecting to SQL) */}
       {errorMessage && (
         <aside
           aria-label="Configuration status"
-          className="bg-rose-950/80 border-b border-rose-800/80 text-rose-200 text-xs sm:text-sm px-4 py-2.5 flex items-center justify-between"
+          className="bg-amber-950/80 border-b border-amber-800/80 text-amber-200 text-xs sm:text-sm px-4 py-2.5 flex items-center justify-between"
         >
           <div className="flex items-center gap-2 max-w-4xl">
             <span className="font-bold">Notice:</span>
             <span>{errorMessage}</span>
           </div>
           <button
-            onClick={() => handleGoogleSignIn()}
-            className="px-2.5 py-1 bg-rose-800 hover:bg-rose-700 text-white rounded-md text-xs font-semibold ml-2 flex-shrink-0"
+            onClick={handleRefresh}
+            className="px-3 py-1 bg-amber-800 hover:bg-amber-700 text-white rounded-md text-xs font-semibold ml-2 flex-shrink-0 flex items-center gap-1.5"
           >
-            Connect Google
+            <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
+            <span>Retry SQL</span>
           </button>
         </aside>
       )}
@@ -459,6 +462,7 @@ export default function App() {
                   hasHermesToken={hasHermesToken}
                   onOpenSettings={() => setIsSettingsOpen(true)}
                   onSelectTag={handleSelectTagFromCard}
+                  onUpdateAsset={handleUpdateAsset}
                 />
               );
             })}
@@ -475,7 +479,7 @@ export default function App() {
             <div className="max-w-md mx-auto space-y-1">
               <h3 className="text-base font-bold text-white">No matching assets found</h3>
               <p className="text-xs sm:text-sm text-slate-400">
-                No CRM assets matched your current search and filter criteria. Try clearing filters or searching for another keyword.
+                No database assets matched your current search and filter criteria. Try clearing filters or searching for another keyword.
               </p>
             </div>
             <button
@@ -510,7 +514,8 @@ export default function App() {
         isLiveMode={isLiveMode}
         onGoogleSignIn={handleGoogleSignIn}
         onGoogleSignOut={handleGoogleSignOut}
-        onToggleLiveMode={(live) => loadCRMData(googleToken, !live)}
+        onToggleLiveMode={() => loadCRMData(true)}
+        onRefreshData={handleRefresh}
         onTokenUpdated={() => {
           const token = getSavedHermesToken();
           setHasHermesToken(Boolean(token));

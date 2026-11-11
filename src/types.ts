@@ -4,8 +4,12 @@ export interface AssetRecordData {
   type?: string;
   status?: string;
   priority?: string;
+  price?: string;
+  currency?: string;
   address?: string;
   description?: string;
+  objective?: string;
+  comment?: string;
   leader?: string;
   team?: string;
   folder?: string;
@@ -19,6 +23,19 @@ export interface AssetRecordData {
   starred?: string;
   tags?: string;
   [key: string]: string | undefined;
+}
+
+export interface AssetUpdatePayload {
+  description?: string;
+  tags?: string;
+  price?: string;
+  currency?: string;
+  status?: string;
+  priority?: string;
+  comment?: string;
+  objective?: string;
+  name?: string;
+  [key: string]: any;
 }
 
 export interface ShortcutLink {

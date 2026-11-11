@@ -2,17 +2,17 @@ import React, { useState, useEffect } from 'react';
 import {
   X,
   Key,
-  ShieldCheck,
+  Database,
   Check,
   Trash2,
   ExternalLink,
-  Info,
-  Server,
-  Database,
   Smartphone,
   Eye,
   EyeOff,
-  Radio
+  Server,
+  Loader2,
+  AlertCircle,
+  RefreshCw
 } from 'lucide-react';
 import { User } from 'firebase/auth';
 import {
@@ -24,6 +24,14 @@ import {
   HERMES_DEFAULT_URL,
   tokenFingerprint
 } from '../lib/hermes';
+import {
+  getSQLBaseUrl,
+  getSQLToken,
+  saveSQLConfig,
+  resetSQLConfig,
+  testSQLConnection,
+  DEFAULT_SQL_BASE_URL
+} from '../lib/api';
 import { ID, GID, SHEET } from '../lib/sheets';
 
 interface SettingsModalProps {
@@ -36,19 +44,21 @@ interface SettingsModalProps {
   onGoogleSignOut: () => void;
   onToggleLiveMode: (live: boolean) => void;
   onTokenUpdated: () => void;
+  onRefreshData?: () => void;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   isOpen,
   onClose,
   user,
-  hasGoogleToken,
   isLiveMode,
   onGoogleSignIn,
   onGoogleSignOut,
   onToggleLiveMode,
   onTokenUpdated,
+  onRefreshData,
 }) => {
+  // Sam AI Hermes state
   const [tokenInput, setTokenInput] = useState('');
   const [showToken, setShowToken] = useState(false);
   const [hermesUrlInput, setHermesUrlInput] = useState('');
@@ -56,26 +66,40 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [fingerprintInfo, setFingerprintInfo] = useState<{ length: number; fingerprint: string } | null>(null);
   const [savedTokenExists, setSavedTokenExists] = useState(false);
 
+  // PostgreSQL REST API state
+  const [sqlBaseUrl, setSqlBaseUrl] = useState('');
+  const [sqlToken, setSqlToken] = useState('');
+  const [showSqlToken, setShowSqlToken] = useState(false);
+  const [isTestingSql, setIsTestingSql] = useState(false);
+  const [sqlTestResult, setSqlTestResult] = useState<{ success: boolean; totalCount?: number; error?: string } | null>(null);
+
   useEffect(() => {
     if (isOpen) {
-      const saved = getSavedHermesToken();
-      setSavedTokenExists(Boolean(saved));
+      // Load Hermes settings
+      const savedHermes = getSavedHermesToken();
+      setSavedTokenExists(Boolean(savedHermes));
       setHermesUrlInput(getSavedHermesUrl());
       setTokenStatus(
-        saved
+        savedHermes
           ? 'Token is securely saved in this browser for Sam AI tasks.'
           : 'No token saved. Enter the assedge webhook token to dispatch tasks to Sam AI.'
       );
-      if (saved) {
-        tokenFingerprint(saved).then(setFingerprintInfo).catch(() => {});
+      if (savedHermes) {
+        tokenFingerprint(savedHermes).then(setFingerprintInfo).catch(() => {});
       } else {
         setFingerprintInfo(null);
       }
+
+      // Load SQL settings
+      setSqlBaseUrl(getSQLBaseUrl());
+      setSqlToken(getSQLToken());
+      setSqlTestResult(null);
     }
   }, [isOpen]);
 
   if (!isOpen) return null;
 
+  // Sam AI handlers
   const handleSaveToken = async () => {
     const trimmed = tokenInput.trim();
     if (!trimmed) {
@@ -111,6 +135,32 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setTokenStatus('Hermes webhook endpoint reset to default.');
   };
 
+  // SQL handlers
+  const handleSaveSqlConfig = () => {
+    saveSQLConfig(sqlBaseUrl, sqlToken);
+    setSqlTestResult({ success: true, error: 'SQL configuration saved.' });
+    if (onRefreshData) onRefreshData();
+  };
+
+  const handleResetSqlConfig = () => {
+    resetSQLConfig();
+    setSqlBaseUrl(DEFAULT_SQL_BASE_URL);
+    setSqlToken(getSQLToken());
+    setSqlTestResult({ success: true, error: 'SQL endpoint & token reset to default.' });
+    if (onRefreshData) onRefreshData();
+  };
+
+  const handleTestSqlConnection = async () => {
+    setIsTestingSql(true);
+    setSqlTestResult(null);
+    try {
+      const result = await testSQLConnection(sqlBaseUrl, sqlToken);
+      setSqlTestResult(result);
+    } finally {
+      setIsTestingSql(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/80 backdrop-blur-xs overflow-y-auto animate-in fade-in">
       <div className="relative w-full max-w-2xl bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl overflow-hidden my-8 text-slate-100 max-h-[90vh] flex flex-col">
@@ -124,7 +174,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             />
             <div>
               <h3 className="text-lg font-bold text-white">REFUMO ASSEDGE Settings</h3>
-              <p className="text-xs text-slate-400">Manage Sam AI credentials, Google CRM access & display</p>
+              <p className="text-xs text-slate-400">PostgreSQL Server, Sam AI & Database Configuration</p>
             </div>
           </div>
           <button
@@ -137,7 +187,107 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
         {/* Modal Body */}
         <div className="p-6 overflow-y-auto space-y-6 flex-1 text-sm">
-          {/* Section 1: Sam AI Connection */}
+          {/* Section 1: PostgreSQL REST API Connection */}
+          <div className="space-y-4 rounded-2xl bg-slate-950/70 border border-slate-800 p-5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Server className="w-4 h-4 text-emerald-400" />
+                <h4 className="font-semibold text-white">PostgreSQL Server (REST API)</h4>
+              </div>
+              <span className="text-xs px-2.5 py-0.5 rounded-full font-medium border bg-emerald-950/80 text-emerald-400 border-emerald-800">
+                Primary Database: hermes
+              </span>
+            </div>
+
+            <p className="text-xs text-slate-400 leading-relaxed">
+              Connects directly to the PostgreSQL database table <code className="text-orange-300 font-mono">public.assets</code> via PostgREST HTTPS API over Tailscale. All edits (price, tags, description) are written immediately to the database.
+            </p>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">
+                  PostgREST Base URL
+                </label>
+                <input
+                  type="text"
+                  value={sqlBaseUrl}
+                  onChange={(e) => setSqlBaseUrl(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-900 border border-slate-700 focus:border-[#FF6400] rounded-xl text-white text-xs font-mono outline-none"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs font-semibold text-slate-300">
+                    Bearer Token (Authorization)
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setShowSqlToken(!showSqlToken)}
+                    className="text-[11px] text-slate-400 hover:text-slate-200 flex items-center gap-1"
+                  >
+                    {showSqlToken ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    <span>{showSqlToken ? 'Hide' : 'Show'}</span>
+                  </button>
+                </div>
+                <input
+                  type={showSqlToken ? 'text' : 'password'}
+                  value={sqlToken}
+                  onChange={(e) => setSqlToken(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-900 border border-slate-700 focus:border-[#FF6400] rounded-xl text-white text-xs font-mono outline-none"
+                />
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={handleTestSqlConnection}
+                  disabled={isTestingSql}
+                  className="flex items-center gap-1.5 px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-xl border border-slate-700 transition"
+                >
+                  {isTestingSql ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                  <span>{isTestingSql ? 'Testing…' : 'Test SQL Connection'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleSaveSqlConfig}
+                  className="px-4 py-2 bg-[#FF6400] hover:bg-[#FF751A] text-white text-xs font-bold rounded-xl transition shadow-sm"
+                >
+                  Save Config
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleResetSqlConfig}
+                  className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium rounded-xl border border-slate-700 transition"
+                >
+                  Reset Default
+                </button>
+              </div>
+
+              {sqlTestResult && (
+                <div className={`p-3 rounded-xl border text-xs flex items-center gap-2 ${
+                  sqlTestResult.success
+                    ? 'bg-emerald-950/80 border-emerald-800 text-emerald-300'
+                    : 'bg-rose-950/80 border-rose-800 text-rose-300'
+                }`}>
+                  {sqlTestResult.success ? (
+                    <Check className="w-4 h-4 flex-shrink-0 text-emerald-400" />
+                  ) : (
+                    <AlertCircle className="w-4 h-4 flex-shrink-0 text-rose-400" />
+                  )}
+                  <span>
+                    {sqlTestResult.success
+                      ? `Connected successfully! Found ${sqlTestResult.totalCount !== undefined ? sqlTestResult.totalCount.toLocaleString() : 'all'} assets in PostgreSQL.`
+                      : `Connection failed: ${sqlTestResult.error}`}
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Section 2: Sam AI Connection */}
           <div className="space-y-4 rounded-2xl bg-slate-950/70 border border-slate-800 p-5">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -208,9 +358,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <div className="text-[#FF6400] font-semibold">
                   Length: {fingerprintInfo.length} chars · SHA-256: {fingerprintInfo.fingerprint}…
                 </div>
-                <p className="text-[11px] text-slate-500 font-sans">
-                  Compare with your gateway SHA-256 method to verify validity without exposing token text.
-                </p>
               </div>
             )}
 
@@ -248,17 +395,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
           </div>
 
-          {/* Section 2: Google Workspace CRM */}
+          {/* Section 3: Google CRM Spreadsheet Reference (Secondary) */}
           <div className="space-y-4 rounded-2xl bg-slate-950/70 border border-slate-800 p-5">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <Database className="w-4 h-4 text-orange-400" />
-                <h4 className="font-semibold text-white">Google CRM Spreadsheet Access</h4>
+                <Database className="w-4 h-4 text-slate-400" />
+                <h4 className="font-semibold text-slate-200">Google Sheet Archive Reference</h4>
               </div>
-              <span className={`text-xs px-2.5 py-0.5 rounded-full font-medium border ${
-                user ? 'bg-emerald-950/80 text-emerald-400 border-emerald-800' : 'bg-slate-800 text-slate-400 border-slate-700'
-              }`}>
-                {user ? 'Google Connected' : 'Not Connected'}
+              <span className="text-xs px-2.5 py-0.5 rounded-full font-medium border bg-slate-800 text-slate-400 border-slate-700">
+                Optional
               </span>
             </div>
 
@@ -288,47 +433,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               ) : (
                 <button
                   onClick={onGoogleSignIn}
-                  className="px-3 py-2 bg-orange-600 hover:bg-orange-500 text-white text-xs font-semibold rounded-xl shadow-sm transition"
+                  className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium rounded-xl border border-slate-700 transition"
                 >
-                  Sign in with Google Account
+                  Sign in with Google (Optional)
                 </button>
               )}
             </div>
-
-            {/* Live Mode vs Demo Mode toggle */}
-            <div className="pt-3 border-t border-slate-800/80 flex items-center justify-between">
-              <div>
-                <div className="text-xs font-semibold text-white">Data Mode</div>
-                <div className="text-[11px] text-slate-400">
-                  {isLiveMode ? 'Reading live records from linked Google Sheet' : 'Using preview demo CRM records'}
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => onToggleLiveMode(true)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition ${
-                    isLiveMode
-                      ? 'bg-emerald-950 text-emerald-400 border-emerald-700'
-                      : 'bg-slate-800 text-slate-400 border-slate-700'
-                  }`}
-                >
-                  Live CRM
-                </button>
-                <button
-                  onClick={() => onToggleLiveMode(false)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition ${
-                    !isLiveMode
-                      ? 'bg-amber-950 text-amber-400 border-amber-700'
-                      : 'bg-slate-800 text-slate-400 border-slate-700'
-                  }`}
-                >
-                  Demo Mode
-                </button>
-              </div>
-            </div>
           </div>
 
-          {/* Section 3: Web & Mobile Information */}
+          {/* Section 4: Web & Mobile Information */}
           <div className="p-4 rounded-2xl bg-slate-950/50 border border-slate-800 text-xs text-slate-400 space-y-2">
             <div className="flex items-center gap-2 text-slate-200 font-semibold">
               <Smartphone className="w-4 h-4 text-orange-400" />
