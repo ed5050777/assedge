@@ -26,6 +26,11 @@ import {
   getSavedHermesToken,
   sendHermes
 } from './lib/hermes';
+import {
+  getStoredCRMRecords,
+  setStoredCRMRecords,
+  clearStoredCRMRecords
+} from './lib/cache';
 import { SAMPLE_RECORDS } from './lib/sampleData';
 import {
   Sparkles,
@@ -37,12 +42,11 @@ import {
   ChevronDown
 } from 'lucide-react';
 
-const CACHE_RECORDS_KEY = 'refumo_crm_records_cache_v2';
 const DRAFTS_KEY = 'refumo_instruction_drafts_v1';
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
-  const [googleToken, setGoogleTokenState] = useState<string | null>(null);
+  const [googleToken, setGoogleTokenState] = useState<string | null>(() => getAccessToken());
   const [records, setRecords] = useState<AssetRecord[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -81,21 +85,16 @@ export default function App() {
       // ignore
     }
 
-    // Try loading local cache first for instant startup
-    try {
-      const cached = localStorage.getItem(CACHE_RECORDS_KEY);
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        if (Array.isArray(parsed.records) && parsed.records.length > 10) {
-          const sortedCached = sortRecords(parsed.records, 'modified');
-          setRecords(sortedCached);
-          setLastUpdated(parsed.timestamp || Date.now());
-          setStatusMessage(`${sortedCached.length} assets loaded.`);
-        }
+    // Load local IndexedDB cache first for instant startup
+    getStoredCRMRecords().then((cached) => {
+      if (cached && Array.isArray(cached.records) && cached.records.length > 0) {
+        const sortedCached = sortRecords(cached.records, 'modified');
+        setRecords(sortedCached);
+        setLastUpdated(cached.timestamp || Date.now());
+        setStatusMessage(`${sortedCached.length} assets loaded.`);
+        setIsLiveMode(true);
       }
-    } catch {
-      // ignore
-    }
+    });
   }, []);
 
   // Save drafts to localStorage
@@ -118,13 +117,11 @@ export default function App() {
         setUser(currentUser);
         if (token) {
           setGoogleTokenState(token);
-          setAccessToken(token);
         }
       },
       () => {
         setUser(null);
         setGoogleTokenState(null);
-        setAccessToken(null);
       }
     );
     return () => unsubscribe();
@@ -138,42 +135,36 @@ export default function App() {
     const activeToken = tokenToUse !== undefined ? tokenToUse : getAccessToken();
 
     try {
-      setStatusMessage('Loading CRM assets…');
+      setStatusMessage('Connecting to Google Sheet…');
       const liveRecords = await fetchLiveCRMRecords(activeToken, forceRefresh);
       const sortedRecords = sortRecords(liveRecords, 'modified');
       setRecords(sortedRecords);
       setIsLiveMode(true);
+      setErrorMessage(null);
       const now = Date.now();
       setLastUpdated(now);
       setStatusMessage(`${sortedRecords.length} assets loaded.`);
 
-      // Persist in local storage for instant offline access
-      try {
-        localStorage.setItem(
-          CACHE_RECORDS_KEY,
-          JSON.stringify({ records: sortedRecords.slice(0, 1000), timestamp: now })
-        );
-      } catch (cacheErr) {
-        console.warn('Failed to save to local storage cache', cacheErr);
-      }
+      // Persist in IndexedDB for instant offline and reload access
+      await setStoredCRMRecords(sortedRecords, now);
     } catch (err: any) {
       console.error('Error fetching live CRM records:', err);
 
-      // Check if we have cached records
-      try {
-        const cached = localStorage.getItem(CACHE_RECORDS_KEY);
-        if (cached) {
-          const parsed = JSON.parse(cached);
-          if (Array.isArray(parsed.records) && parsed.records.length > 0) {
-            const sortedCached = sortRecords(parsed.records, 'modified');
-            setRecords(sortedCached);
-            setLastUpdated(parsed.timestamp);
-            setStatusMessage(`${sortedCached.length} cached assets loaded.`);
-            setIsLoading(false);
-            return;
-          }
+      // Check if we have cached records in IndexedDB
+      const cached = await getStoredCRMRecords();
+      if (cached && Array.isArray(cached.records) && cached.records.length > 0) {
+        const sortedCached = sortRecords(cached.records, 'modified');
+        setRecords(sortedCached);
+        setLastUpdated(cached.timestamp);
+        setStatusMessage(`${sortedCached.length} assets loaded from cache.`);
+        setIsLiveMode(true);
+        if (!activeToken) {
+          setErrorMessage('Showing cached assets. Connect Google to sync live updates.');
+        } else {
+          setErrorMessage(err.message || 'Unable to refresh live CRM records. Showing cached assets.');
         }
-      } catch {}
+        return;
+      }
 
       // Fallback only if completely unavailable
       const sortedSample = sortRecords(SAMPLE_RECORDS, 'modified');
@@ -199,8 +190,7 @@ export default function App() {
       const res = await googleSignIn();
       setUser(res.user);
       setGoogleTokenState(res.accessToken);
-      setAccessToken(res.accessToken);
-      await loadCRMData(res.accessToken, false);
+      await loadCRMData(res.accessToken, true);
     } catch (err: any) {
       console.error('Sign-in failed:', err);
       setErrorMessage(err.message || 'Google Sign-in failed. Please try again.');
@@ -212,9 +202,9 @@ export default function App() {
   // Google Sign Out handler
   const handleGoogleSignOut = async () => {
     await logout();
+    await clearStoredCRMRecords();
     setUser(null);
     setGoogleTokenState(null);
-    setAccessToken(null);
     setIsLiveMode(false);
     setRecords(SAMPLE_RECORDS);
     setStatusMessage('Signed out. Switched to preview dataset.');

@@ -19,8 +19,48 @@ provider.setCustomParameters({
   prompt: 'select_account'
 });
 
+const GOOGLE_TOKEN_STORAGE_KEY = 'refumo_google_access_token_v1';
+const GOOGLE_TOKEN_EXP_KEY = 'refumo_google_access_token_exp_v1';
+
 let isSigningIn = false;
 let cachedAccessToken: string | null = null;
+
+export const getAccessToken = (): string | null => {
+  if (cachedAccessToken) return cachedAccessToken;
+  try {
+    const token = localStorage.getItem(GOOGLE_TOKEN_STORAGE_KEY);
+    const expStr = localStorage.getItem(GOOGLE_TOKEN_EXP_KEY);
+    if (token && expStr) {
+      const exp = Number(expStr);
+      // Valid if it hasn't expired (leave 60s margin)
+      if (Date.now() < exp - 60000) {
+        cachedAccessToken = token;
+        return token;
+      } else {
+        localStorage.removeItem(GOOGLE_TOKEN_STORAGE_KEY);
+        localStorage.removeItem(GOOGLE_TOKEN_EXP_KEY);
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+};
+
+export const setAccessToken = (token: string | null, expiresInSeconds = 3500) => {
+  cachedAccessToken = token;
+  try {
+    if (token) {
+      localStorage.setItem(GOOGLE_TOKEN_STORAGE_KEY, token);
+      localStorage.setItem(GOOGLE_TOKEN_EXP_KEY, String(Date.now() + expiresInSeconds * 1000));
+    } else {
+      localStorage.removeItem(GOOGLE_TOKEN_STORAGE_KEY);
+      localStorage.removeItem(GOOGLE_TOKEN_EXP_KEY);
+    }
+  } catch {
+    // ignore
+  }
+};
 
 export const initAuth = (
   onAuthSuccess?: (user: User, token: string | null) => void,
@@ -28,14 +68,10 @@ export const initAuth = (
 ) => {
   return onAuthStateChanged(auth, async (user: User | null) => {
     if (user) {
-      if (cachedAccessToken) {
-        if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
-      } else if (!isSigningIn) {
-        // User is logged into Firebase, but OAuth access token might need interactive sign-in or cached re-prompt
-        if (onAuthSuccess) onAuthSuccess(user, null);
-      }
+      const token = getAccessToken();
+      if (onAuthSuccess) onAuthSuccess(user, token);
     } else {
-      cachedAccessToken = null;
+      setAccessToken(null);
       if (onAuthFailure) onAuthFailure();
     }
   });
@@ -49,8 +85,8 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
     if (!credential?.accessToken) {
       throw new Error('Google did not return an access token for Sheets. Please approve the permissions.');
     }
-    cachedAccessToken = credential.accessToken;
-    return { user: result.user, accessToken: cachedAccessToken };
+    setAccessToken(credential.accessToken);
+    return { user: result.user, accessToken: credential.accessToken };
   } catch (error: any) {
     console.error('Google Sign-in Error:', error);
     throw error;
@@ -59,15 +95,7 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
   }
 };
 
-export const getAccessToken = (): string | null => {
-  return cachedAccessToken;
-};
-
-export const setAccessToken = (token: string | null) => {
-  cachedAccessToken = token;
-};
-
 export const logout = async () => {
   await signOut(auth);
-  cachedAccessToken = null;
+  setAccessToken(null);
 };

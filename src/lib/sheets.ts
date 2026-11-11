@@ -1,4 +1,5 @@
 import { AssetRecord, AssetRecordData, ShortcutLink, SortMode } from '../types';
+import { setAccessToken } from './auth';
 
 export const ID = '1mJc2Z3ziqRIHqJaES1p9u12MbZgWlEBxNT_bND6Nuuc';
 export const GID = 1964624729;
@@ -258,20 +259,46 @@ export function sortRecords(records: AssetRecord[], mode: SortMode = 'modified')
 }
 
 export async function fetchLiveCRMRecords(token?: string | null, forceRefresh = false): Promise<AssetRecord[]> {
-  // 1. Try server endpoint /api/crm/records (returns all 4,600+ real assets from Google Sheet)
-  try {
-    const res = await fetch(`/api/crm/records${forceRefresh ? '?refresh=true' : ''}`);
-    if (res.ok) {
-      const json = await res.json();
-      if (json.ok && Array.isArray(json.records) && json.records.length > 0) {
-        return json.records;
+  // 1. If Google OAuth token is provided, prioritize official Google Sheets API
+  if (token) {
+    try {
+      const metaRes = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${ID}?fields=sheets(properties)`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+          cache: 'no-store',
+        }
+      );
+      if (metaRes.status === 401) {
+        console.warn('Google Sheets token expired or invalid (401)');
+        setAccessToken(null);
+      } else if (metaRes.ok) {
+        const meta = await metaRes.json();
+        const sheet = meta.sheets?.find((s: any) => s.properties.sheetId === GID)?.properties;
+        if (sheet) {
+          const rowCount = sheet.gridProperties?.rowCount || 5000;
+          const range = `'${sheet.title.replaceAll("'", "''")}'!A1:BG${rowCount}`;
+          const fields =
+            'sheets(data(rowData(values(formattedValue,hyperlink,textFormatRuns(format(link)),userEnteredValue(formulaValue)))))';
+          const gridRes = await fetch(
+            `https://sheets.googleapis.com/v4/spreadsheets/${ID}?includeGridData=true&ranges=${encodeURIComponent(
+              range
+            )}&fields=${encodeURIComponent(fields)}`,
+            { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' }
+          );
+          if (gridRes.ok) {
+            const grid = await gridRes.json();
+            const rowData = grid.sheets?.[0]?.data?.[0]?.rowData || [];
+            return recordsFrom(rowData);
+          }
+        }
       }
+    } catch (e) {
+      console.warn('Sheets API fetch error:', e);
     }
-  } catch (err) {
-    console.warn('/api/crm/records fetch failed, trying direct gviz...', err);
   }
 
-  // 2. Direct client gviz fetch
+  // 2. Direct client gviz fetch (works if sheet is shared as "Anyone with the link" or published to web)
   try {
     const gvizRes = await fetch(
       `https://docs.google.com/spreadsheets/d/${ID}/gviz/tq?tqx=out:json&gid=${GID}`,
@@ -316,43 +343,20 @@ export async function fetchLiveCRMRecords(token?: string | null, forceRefresh = 
       if (parsed.length > 0) return sortRecords(parsed, 'modified');
     }
   } catch (directGvizErr) {
-    console.warn('Direct gviz fetch failed, trying Google Sheets API...', directGvizErr);
+    console.warn('Direct gviz fetch failed:', directGvizErr);
   }
 
-  // 3. Fallback to Google Sheets API if token provided
-  if (token) {
-    try {
-      const metaRes = await fetch(
-        `https://sheets.googleapis.com/v4/spreadsheets/${ID}?fields=sheets(properties)`,
-        {
-          headers: { Authorization: `Bearer ${token}` },
-          cache: 'no-store',
-        }
-      );
-      if (metaRes.ok) {
-        const meta = await metaRes.json();
-        const sheet = meta.sheets?.find((s: any) => s.properties.sheetId === GID)?.properties;
-        if (sheet) {
-          const rowCount = sheet.gridProperties?.rowCount || 5000;
-          const range = `'${sheet.title.replaceAll("'", "''")}'!A1:BG${rowCount}`;
-          const fields =
-            'sheets(data(rowData(values(formattedValue,hyperlink,textFormatRuns(format(link)),userEnteredValue(formulaValue)))))';
-          const gridRes = await fetch(
-            `https://sheets.googleapis.com/v4/spreadsheets/${ID}?includeGridData=true&ranges=${encodeURIComponent(
-              range
-            )}&fields=${encodeURIComponent(fields)}`,
-            { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' }
-          );
-          if (gridRes.ok) {
-            const grid = await gridRes.json();
-            const rowData = grid.sheets?.[0]?.data?.[0]?.rowData || [];
-            return recordsFrom(rowData);
-          }
-        }
+  // 3. Fallback: server endpoint /api/crm/records if available
+  try {
+    const res = await fetch(`/api/crm/records${forceRefresh ? '?refresh=true' : ''}`);
+    if (res.ok) {
+      const json = await res.json();
+      if (json.ok && Array.isArray(json.records) && json.records.length > 0) {
+        return json.records;
       }
-    } catch (e) {
-      console.warn('Sheets API fallback error:', e);
     }
+  } catch (err) {
+    console.warn('/api/crm/records fetch failed:', err);
   }
 
   throw new Error('Unable to load CRM records.');
