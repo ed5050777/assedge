@@ -138,7 +138,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   // SQL handlers
   const handleSaveSqlConfig = () => {
     saveSQLConfig(sqlBaseUrl, sqlToken);
-    setSqlTestResult({ success: true, error: 'SQL configuration saved.' });
+    setSqlBaseUrl(getSQLBaseUrl());
+    setSqlTestResult({ success: true, error: 'SQL configuration saved successfully.' });
     if (onRefreshData) onRefreshData();
   };
 

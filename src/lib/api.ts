@@ -8,10 +8,29 @@ export const DEFAULT_SQL_TOKEN =
 export const SQL_BASE_URL_KEY = 'refumo_sql_base_url_v1';
 export const SQL_TOKEN_KEY = 'refumo_sql_token_v1';
 
+export const ASSET_SELECT_FIELDS =
+  'asset_id,name,type,status,priority,price,currency,address,description,short_description,objective,comment,leader,team,tags,modified_ts,created_at,starred,folder,opener,memo,link';
+
+/**
+ * Returns a validated base URL for PostgreSQL PostgREST API.
+ * Never returns relative or app-domain URLs which would trigger Netlify SPA html rewrites.
+ */
 export function getSQLBaseUrl(): string {
   try {
     const custom = localStorage.getItem(SQL_BASE_URL_KEY);
-    if (custom && custom.trim()) return custom.trim().replace(/\/+$/, '');
+    if (custom) {
+      const trimmed = custom.trim().replace(/\/+$/, '');
+      if (
+        trimmed &&
+        (trimmed.startsWith('https://') || trimmed.startsWith('http://')) &&
+        !trimmed.includes('assedge.refumo.com') &&
+        (typeof window === 'undefined' || !trimmed.includes(window.location.host))
+      ) {
+        return trimmed;
+      }
+      // If an invalid or relative path was previously stored, clean it up
+      localStorage.removeItem(SQL_BASE_URL_KEY);
+    }
   } catch {}
   return DEFAULT_SQL_BASE_URL;
 }
@@ -19,15 +38,30 @@ export function getSQLBaseUrl(): string {
 export function getSQLToken(): string {
   try {
     const custom = localStorage.getItem(SQL_TOKEN_KEY);
-    if (custom && custom.trim()) return custom.trim();
+    if (custom && custom.trim().length > 20) {
+      return custom.trim();
+    }
+    if (custom !== null) {
+      localStorage.removeItem(SQL_TOKEN_KEY);
+    }
   } catch {}
   return DEFAULT_SQL_TOKEN;
 }
 
 export function saveSQLConfig(baseUrl: string, token: string) {
   try {
-    if (baseUrl.trim()) localStorage.setItem(SQL_BASE_URL_KEY, baseUrl.trim().replace(/\/+$/, ''));
-    if (token.trim()) localStorage.setItem(SQL_TOKEN_KEY, token.trim());
+    let cleanUrl = baseUrl.trim().replace(/\/+$/, '');
+    if (cleanUrl) {
+      if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://')) {
+        cleanUrl = `https://${cleanUrl}`;
+      }
+      if (!cleanUrl.includes('assedge.refumo.com')) {
+        localStorage.setItem(SQL_BASE_URL_KEY, cleanUrl);
+      }
+    }
+    if (token.trim() && token.trim().length > 20) {
+      localStorage.setItem(SQL_TOKEN_KEY, token.trim());
+    }
   } catch {}
 }
 
@@ -41,12 +75,18 @@ export function resetSQLConfig() {
 /**
  * Quick ping / test to check if PostgreSQL PostgREST server is reachable and valid
  */
-export async function testSQLConnection(customUrl?: string, customToken?: string): Promise<{ success: boolean; totalCount?: number; error?: string }> {
-  const baseUrl = (customUrl && customUrl.trim()) ? customUrl.trim().replace(/\/+$/, '') : getSQLBaseUrl();
+export async function testSQLConnection(
+  customUrl?: string,
+  customToken?: string
+): Promise<{ success: boolean; totalCount?: number; error?: string }> {
+  let baseUrl = (customUrl && customUrl.trim()) ? customUrl.trim().replace(/\/+$/, '') : getSQLBaseUrl();
+  if (!baseUrl.startsWith('http://') && !baseUrl.startsWith('https://')) {
+    baseUrl = `https://${baseUrl}`;
+  }
   const token = (customToken && customToken.trim()) ? customToken.trim() : getSQLToken();
 
   try {
-    const res = await fetch(`${baseUrl}/assets?limit=1`, {
+    const res = await fetch(`${baseUrl}/assets?limit=1&select=asset_id`, {
       method: 'GET',
       headers: {
         Authorization: `Bearer ${token}`,
@@ -55,11 +95,26 @@ export async function testSQLConnection(customUrl?: string, customToken?: string
       },
     });
 
+    const contentType = res.headers.get('content-type') || '';
+
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
+      if (errText.includes('<!doctype') || errText.includes('<html')) {
+        return {
+          success: false,
+          error: `Endpoint returned an HTML error page (HTTP ${res.status}). Verify connection to ${baseUrl}`,
+        };
+      }
       return {
         success: false,
         error: `HTTP ${res.status}: ${errText || res.statusText}`,
+      };
+    }
+
+    if (!contentType.includes('application/json')) {
+      return {
+        success: false,
+        error: `Expected JSON response but server returned "${contentType}". Check server URL.`,
       };
     }
 
@@ -129,39 +184,99 @@ export function sqlRowToAssetRecord(row: any, idx: number): AssetRecord {
 
 /**
  * Fetch all assets from PostgreSQL via PostgREST
+ * Supports progressive callback so the UI displays the first batch instantly.
  */
-export async function fetchSQLAssets(limit = 5000): Promise<AssetRecord[]> {
+export async function fetchSQLAssets(
+  limit = 5000,
+  onProgress?: (loadedCount: number, records: AssetRecord[], total?: number) => void
+): Promise<AssetRecord[]> {
   const baseUrl = getSQLBaseUrl();
   const token = getSQLToken();
 
-  const url = `${baseUrl}/assets?order=modified_ts.desc.nullslast&limit=${limit}`;
+  const fetchChunk = async (chunkLimit: number, chunkOffset: number): Promise<{ rows: any[]; totalCount?: number }> => {
+    const url = `${baseUrl}/assets?order=modified_ts.desc.nullslast&limit=${chunkLimit}&offset=${chunkOffset}&select=${ASSET_SELECT_FIELDS}`;
 
-  const res = await fetch(url, {
-    method: 'GET',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: 'application/json',
-    },
-    cache: 'no-store',
-  });
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+        Prefer: 'count=exact',
+      },
+      cache: 'no-store',
+    });
 
-  if (!res.ok) {
-    const errorText = await res.text().catch(() => '');
-    throw new Error(
-      `SQL Server error (HTTP ${res.status}): ${errorText || res.statusText || 'Failed to fetch assets'}`
-    );
-  }
+    const contentType = res.headers.get('content-type') || '';
 
-  const rows = await res.json();
-  if (!Array.isArray(rows)) {
-    throw new Error('Invalid response format from SQL server: expected array of assets');
-  }
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      if (errText.includes('<!doctype') || errText.includes('<html')) {
+        throw new Error(
+          `SQL endpoint returned an HTML error page (HTTP ${res.status}). Verify connection to ${baseUrl}`
+        );
+      }
+      throw new Error(
+        `SQL Server error (HTTP ${res.status}): ${errText || res.statusText || 'Failed to fetch assets'}`
+      );
+    }
 
-  const records: AssetRecord[] = rows
+    if (!contentType.includes('application/json')) {
+      const textPreview = (await res.text().catch(() => '')).slice(0, 150);
+      throw new Error(
+        `SQL Server returned HTML instead of JSON (${textPreview.slice(0, 50)}...). Ensure endpoint is ${DEFAULT_SQL_BASE_URL}`
+      );
+    }
+
+    const rangeHeader = res.headers.get('content-range');
+    let totalCount: number | undefined;
+    if (rangeHeader) {
+      const match = rangeHeader.match(/\/(\d+)/);
+      if (match) totalCount = parseInt(match[1], 10);
+    }
+
+    const rows = await res.json();
+    if (!Array.isArray(rows)) {
+      throw new Error('Invalid response format from SQL server: expected array of assets');
+    }
+
+    return { rows, totalCount };
+  };
+
+  // 1. Fetch initial chunk (1,000 items) for ultra-fast startup
+  const firstBatchSize = Math.min(limit, 1000);
+  const firstBatch = await fetchChunk(firstBatchSize, 0);
+
+  let allRows = [...firstBatch.rows];
+  const totalInDb = firstBatch.totalCount ?? allRows.length;
+
+  let currentRecords = allRows
     .filter((row) => row && (row.asset_id || row.name))
     .map((row, idx) => sqlRowToAssetRecord(row, idx));
 
-  return sortRecords(records, 'modified');
+  if (onProgress) {
+    onProgress(currentRecords.length, currentRecords, totalInDb);
+  }
+
+  // 2. Fetch remainder if total is greater than first batch
+  if (limit > firstBatchSize && allRows.length < totalInDb && firstBatch.rows.length === firstBatchSize) {
+    try {
+      const remainingLimit = limit - firstBatchSize;
+      const secondBatch = await fetchChunk(remainingLimit, firstBatchSize);
+      allRows = allRows.concat(secondBatch.rows);
+
+      currentRecords = allRows
+        .filter((row) => row && (row.asset_id || row.name))
+        .map((row, idx) => sqlRowToAssetRecord(row, idx));
+
+      if (onProgress) {
+        onProgress(currentRecords.length, currentRecords, totalInDb);
+      }
+    } catch (chunkErr) {
+      console.warn('Could not fetch secondary asset chunk, proceeding with initial batch:', chunkErr);
+    }
+  }
+
+  return sortRecords(currentRecords, 'modified');
 }
 
 /**
@@ -180,7 +295,8 @@ export async function getSQLAsset(assetId: string): Promise<AssetRecordData | nu
     },
   });
 
-  if (!res.ok) {
+  const contentType = res.headers.get('content-type') || '';
+  if (!res.ok || !contentType.includes('application/json')) {
     throw new Error(`Failed to fetch asset ${assetId}: HTTP ${res.status}`);
   }
 
@@ -220,11 +336,17 @@ export async function updateSQLAsset(
     body: JSON.stringify(payload),
   });
 
+  const contentType = res.headers.get('content-type') || '';
+
   if (!res.ok) {
     const errText = await res.text().catch(() => '');
     throw new Error(
       `Failed to update asset in SQL server (HTTP ${res.status}): ${errText || res.statusText}`
     );
+  }
+
+  if (!contentType.includes('application/json')) {
+    throw new Error('Server returned non-JSON response when updating asset.');
   }
 
   const list = await res.json();

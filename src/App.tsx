@@ -127,14 +127,24 @@ export default function App() {
 
     try {
       setStatusMessage('Connecting to PostgreSQL database…');
-      const liveRecords = await fetchSQLAssets(5000);
+      const liveRecords = await fetchSQLAssets(5000, (loadedCount, currentRecords, total) => {
+        const sorted = sortRecords(currentRecords, 'modified');
+        setRecords(sorted);
+        setIsLiveMode(true);
+        setStatusMessage(
+          total && total > loadedCount
+            ? `Loading ${loadedCount.toLocaleString()} of ${total.toLocaleString()} assets…`
+            : `${loadedCount.toLocaleString()} assets loaded from SQL.`
+        );
+      });
+
       const sortedRecords = sortRecords(liveRecords, 'modified');
       setRecords(sortedRecords);
       setIsLiveMode(true);
       setErrorMessage(null);
       const now = Date.now();
       setLastUpdated(now);
-      setStatusMessage(`${sortedRecords.length} assets loaded from SQL.`);
+      setStatusMessage(`${sortedRecords.length.toLocaleString()} assets loaded from SQL.`);
 
       // Persist in IndexedDB for instant offline and reload access
       await setStoredCRMRecords(sortedRecords, now);
@@ -147,7 +157,7 @@ export default function App() {
         const sortedCached = sortRecords(cached.records, 'modified');
         setRecords(sortedCached);
         setLastUpdated(cached.timestamp);
-        setStatusMessage(`${sortedCached.length} assets loaded from cache.`);
+        setStatusMessage(`${sortedCached.length.toLocaleString()} assets loaded from cache.`);
         setIsLiveMode(true);
         setErrorMessage(
           `Unable to refresh from SQL server (${err.message || 'Network error'}). Showing cached assets.`
