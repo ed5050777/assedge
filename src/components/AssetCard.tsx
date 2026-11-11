@@ -34,6 +34,7 @@ interface AssetCardProps {
   deliveryStatus?: HermesDeliveryStatus;
   hasHermesToken: boolean;
   onOpenSettings: () => void;
+  onSelectTag?: (tag: string) => void;
 }
 
 export const AssetCard: React.FC<AssetCardProps> = ({
@@ -46,6 +47,7 @@ export const AssetCard: React.FC<AssetCardProps> = ({
   deliveryStatus,
   hasHermesToken,
   onOpenSettings,
+  onSelectTag,
 }) => {
   const [copiedId, setCopiedId] = useState(false);
   const [localSending, setLocalSending] = useState(false);
@@ -158,13 +160,19 @@ export const AssetCard: React.FC<AssetCardProps> = ({
 
               {/* Tags badges whenever there is a value */}
               {tagsList.map((tag, idx) => (
-                <span
+                <button
+                  type="button"
                   key={`tag-badge-${idx}`}
-                  className="inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-[#FF6400]/15 text-[#FF8533] border border-[#FF6400]/30 shadow-xs"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSelectTag?.(tag);
+                  }}
+                  title={`Filter by tag: ${tag}`}
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-[#FF6400]/15 text-[#FF8533] border border-[#FF6400]/30 hover:bg-[#FF6400]/30 hover:border-[#FF6400]/60 transition shadow-xs cursor-pointer"
                 >
                   <Tag className="w-3 h-3 text-[#FF6400] flex-shrink-0" />
                   <span>{tag}</span>
-                </span>
+                </button>
               ))}
             </div>
 
@@ -347,12 +355,15 @@ export const AssetCard: React.FC<AssetCardProps> = ({
               </span>
               <div className="flex flex-wrap items-center gap-1.5">
                 {tagsList.map((tag, idx) => (
-                  <span
+                  <button
+                    type="button"
                     key={`tag-chip-${idx}`}
-                    className="inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg bg-[#FF6400]/15 text-[#FF8533] border border-[#FF6400]/30 font-semibold"
+                    onClick={() => onSelectTag?.(tag)}
+                    title={`Filter by tag: ${tag}`}
+                    className="inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg bg-[#FF6400]/15 text-[#FF8533] border border-[#FF6400]/30 hover:bg-[#FF6400]/30 hover:border-[#FF6400]/60 transition font-semibold cursor-pointer"
                   >
                     <span>{tag}</span>
-                  </span>
+                  </button>
                 ))}
               </div>
             </div>

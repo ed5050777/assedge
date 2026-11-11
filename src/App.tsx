@@ -54,6 +54,8 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedType, setSelectedType] = useState<string>('');
   const [selectedStatus, setSelectedStatus] = useState<string>('');
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [tagMatchMode, setTagMatchMode] = useState<'any' | 'all'>('any');
   const [sortMode, setSortMode] = useState<SortMode>('modified');
   const [starredOnly, setStarredOnly] = useState<boolean>(false);
   const [limit, setLimit] = useState<number>(40);
@@ -265,17 +267,32 @@ export default function App() {
     }
   };
 
-  // Compute unique Types and Statuses for filter dropdowns
-  const { availableTypes, availableStatuses } = useMemo(() => {
+  // Compute unique Types, Statuses and Tags for filter dropdowns
+  const { availableTypes, availableStatuses, availableTags } = useMemo(() => {
     const typeSet = new Set<string>();
     const statusSet = new Set<string>();
+    const tagCountMap = new Map<string, number>();
+
     records.forEach((r) => {
       if (r.data.type) typeSet.add(r.data.type);
       if (r.data.status) statusSet.add(r.data.status);
+      const rawTags = r.data.tags || '';
+      if (rawTags) {
+        const split = rawTags.split(/[,;\n]/).map((t) => t.trim()).filter(Boolean);
+        split.forEach((t) => {
+          tagCountMap.set(t, (tagCountMap.get(t) || 0) + 1);
+        });
+      }
     });
+
+    const sortedTags = Array.from(tagCountMap.entries())
+      .map(([tag, count]) => ({ tag, count }))
+      .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag));
+
     return {
       availableTypes: Array.from(typeSet).sort(),
       availableStatuses: Array.from(statusSet).sort(),
+      availableTags: sortedTags,
     };
   }, [records]);
 
@@ -290,6 +307,23 @@ export default function App() {
         const isStarred = r.data.starred === 'Yes' || r.data.starred === 'true' || r.data.starred === '1';
         if (!isStarred) return false;
       }
+
+      // Filter by selected tags
+      if (selectedTags.length > 0) {
+        const recordTags = (r.data.tags || '')
+          .split(/[,;\n]/)
+          .map((t) => t.trim().toLowerCase())
+          .filter(Boolean);
+
+        if (tagMatchMode === 'all') {
+          const hasAll = selectedTags.every((st) => recordTags.includes(st.toLowerCase()));
+          if (!hasAll) return false;
+        } else {
+          const hasAny = selectedTags.some((st) => recordTags.includes(st.toLowerCase()));
+          if (!hasAny) return false;
+        }
+      }
+
       for (const term of terms) {
         if (!r.search.includes(term)) return false;
       }
@@ -297,16 +331,35 @@ export default function App() {
     });
 
     return sortRecords(matches, sortMode);
-  }, [records, searchQuery, selectedType, selectedStatus, sortMode, starredOnly]);
+  }, [records, searchQuery, selectedType, selectedStatus, selectedTags, tagMatchMode, sortMode, starredOnly]);
 
   const visibleRecords = useMemo(() => {
     return filteredRecords.slice(0, limit);
   }, [filteredRecords, limit]);
 
+  const handleToggleTag = (tag: string) => {
+    setSelectedTags((prev) =>
+      prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]
+    );
+    setLimit(40);
+  };
+
+  const handleClearTags = () => {
+    setSelectedTags([]);
+    setLimit(40);
+  };
+
+  const handleSelectTagFromCard = (tag: string) => {
+    setSelectedTags((prev) => (prev.includes(tag) ? prev : [...prev, tag]));
+    setLimit(40);
+  };
+
   const handleResetFilters = () => {
     setSearchQuery('');
     setSelectedType('');
     setSelectedStatus('');
+    setSelectedTags([]);
+    setTagMatchMode('any');
     setStarredOnly(false);
     setLimit(40);
   };
@@ -368,6 +421,12 @@ export default function App() {
             setSelectedStatus(val);
             setLimit(40);
           }}
+          selectedTags={selectedTags}
+          onToggleTag={handleToggleTag}
+          onClearTags={handleClearTags}
+          availableTags={availableTags}
+          tagMatchMode={tagMatchMode}
+          onTagMatchModeChange={setTagMatchMode}
           sortMode={sortMode}
           onSortChange={(mode) => setSortMode(mode)}
           starredOnly={starredOnly}
@@ -409,6 +468,7 @@ export default function App() {
                   deliveryStatus={deliveries[key]}
                   hasHermesToken={hasHermesToken}
                   onOpenSettings={() => setIsSettingsOpen(true)}
+                  onSelectTag={handleSelectTagFromCard}
                 />
               );
             })}

@@ -17,12 +17,18 @@ export interface AssetRecordData {
   reminder_time?: string;
   reminder_starts?: string;
   starred?: string;
+  tags?: string;
   [key: string]: string | undefined;
 }
 
 export interface ShortcutLink {
   url: string;
   label: string;
+}
+
+export interface TagCount {
+  tag: string;
+  count: number;
 }
 
 export interface AssetRecord {
@@ -39,6 +45,8 @@ export interface FilterState {
   search: string;
   type: string;
   status: string;
+  tags: string[];
+  tagMatchMode: 'any' | 'all';
   sort: SortMode;
   starredOnly: boolean;
 }
