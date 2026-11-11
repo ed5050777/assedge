@@ -1,4 +1,4 @@
-const CACHE_NAME = 'refumo-assedge-v3';
+const CACHE_NAME = 'refumo-assedge-v4';
 const ASSETS_TO_CACHE = [
   '/',
   '/index.html',
@@ -29,13 +29,21 @@ self.addEventListener('activate', (event) => {
   );
 });
 
-// Network-first for fresh app code, fallback to cache when offline
+// Network-first for fresh app code, fallback to cache ONLY for HTML navigation when offline
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
-  if (url.pathname.startsWith('/api') || url.hostname.includes('googleapis.com') || url.hostname.includes('firebaseapp.com')) {
+
+  // 1. NEVER intercept cross-origin requests (Tailscale Funnel, Google APIs, Firebase, external databases)
+  if (url.origin !== self.location.origin) {
     return;
   }
 
+  // 2. NEVER intercept API or backend function routes
+  if (url.pathname.startsWith('/api') || url.pathname.startsWith('/.netlify')) {
+    return;
+  }
+
+  // 3. For same-origin static assets and HTML navigation
   event.respondWith(
     fetch(event.request)
       .then((response) => {
@@ -47,6 +55,13 @@ self.addEventListener('fetch', (event) => {
         }
         return response;
       })
-      .catch(() => caches.match(event.request).then((cached) => cached || caches.match('/index.html')))
+      .catch(() => {
+        // ONLY return index.html for page navigation (e.g. user offline refreshing the web app)
+        // NEVER return index.html for data/asset/JSON requests!
+        if (event.request.mode === 'navigate') {
+          return caches.match('/index.html');
+        }
+        return caches.match(event.request);
+      })
   );
 });

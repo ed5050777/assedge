@@ -13,7 +13,8 @@ export const ASSET_SELECT_FIELDS =
 
 /**
  * Returns a validated base URL for PostgreSQL PostgREST API.
- * Never returns relative or app-domain URLs which would trigger Netlify SPA html rewrites.
+ * On deployed refumo domains, defaults to same-origin Netlify proxy (/api/sql)
+ * to avoid cross-origin restrictions, custom port 8443 firewall blocks, and service worker hijacks.
  */
 export function getSQLBaseUrl(): string {
   try {
@@ -21,10 +22,10 @@ export function getSQLBaseUrl(): string {
     if (custom) {
       const trimmed = custom.trim().replace(/\/+$/, '');
       if (
-        trimmed &&
-        (trimmed.startsWith('https://') || trimmed.startsWith('http://')) &&
-        !trimmed.includes('assedge.refumo.com') &&
-        (typeof window === 'undefined' || !trimmed.includes(window.location.host))
+        trimmed === '/api/sql' ||
+        ((trimmed.startsWith('https://') || trimmed.startsWith('http://')) &&
+          !trimmed.includes('assedge.refumo.com/assets') &&
+          (typeof window === 'undefined' || !trimmed.includes(window.location.host + '/assets')))
       ) {
         return trimmed;
       }
@@ -32,6 +33,12 @@ export function getSQLBaseUrl(): string {
       localStorage.removeItem(SQL_BASE_URL_KEY);
     }
   } catch {}
+
+  // In production browser environment, use same-origin proxy
+  if (typeof window !== 'undefined' && window.location.hostname.includes('refumo.com')) {
+    return '/api/sql';
+  }
+
   return DEFAULT_SQL_BASE_URL;
 }
 
@@ -52,11 +59,15 @@ export function saveSQLConfig(baseUrl: string, token: string) {
   try {
     let cleanUrl = baseUrl.trim().replace(/\/+$/, '');
     if (cleanUrl) {
-      if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://')) {
-        cleanUrl = `https://${cleanUrl}`;
-      }
-      if (!cleanUrl.includes('assedge.refumo.com')) {
-        localStorage.setItem(SQL_BASE_URL_KEY, cleanUrl);
+      if (cleanUrl === '/api/sql') {
+        localStorage.setItem(SQL_BASE_URL_KEY, '/api/sql');
+      } else {
+        if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://')) {
+          cleanUrl = `https://${cleanUrl}`;
+        }
+        if (!cleanUrl.includes('assedge.refumo.com/assets')) {
+          localStorage.setItem(SQL_BASE_URL_KEY, cleanUrl);
+        }
       }
     }
     if (token.trim() && token.trim().length > 20) {
@@ -80,13 +91,13 @@ export async function testSQLConnection(
   customToken?: string
 ): Promise<{ success: boolean; totalCount?: number; error?: string }> {
   let baseUrl = (customUrl && customUrl.trim()) ? customUrl.trim().replace(/\/+$/, '') : getSQLBaseUrl();
-  if (!baseUrl.startsWith('http://') && !baseUrl.startsWith('https://')) {
+  if (baseUrl !== '/api/sql' && !baseUrl.startsWith('http://') && !baseUrl.startsWith('https://')) {
     baseUrl = `https://${baseUrl}`;
   }
   const token = (customToken && customToken.trim()) ? customToken.trim() : getSQLToken();
 
-  try {
-    const res = await fetch(`${baseUrl}/assets?limit=1&select=asset_id`, {
+  const testSingleUrl = async (urlToTest: string) => {
+    const res = await fetch(`${urlToTest}/assets?limit=1&select=asset_id`, {
       method: 'GET',
       headers: {
         Authorization: `Bearer ${token}`,
@@ -100,22 +111,13 @@ export async function testSQLConnection(
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
       if (errText.includes('<!doctype') || errText.includes('<html')) {
-        return {
-          success: false,
-          error: `Endpoint returned an HTML error page (HTTP ${res.status}). Verify connection to ${baseUrl}`,
-        };
+        throw new Error(`Endpoint returned HTML error page (HTTP ${res.status})`);
       }
-      return {
-        success: false,
-        error: `HTTP ${res.status}: ${errText || res.statusText}`,
-      };
+      throw new Error(`HTTP ${res.status}: ${errText || res.statusText}`);
     }
 
     if (!contentType.includes('application/json')) {
-      return {
-        success: false,
-        error: `Expected JSON response but server returned "${contentType}". Check server URL.`,
-      };
+      throw new Error(`Expected JSON response but server returned "${contentType}"`);
     }
 
     const rangeHeader = res.headers.get('content-range');
@@ -125,11 +127,20 @@ export async function testSQLConnection(
       if (match) totalCount = parseInt(match[1], 10);
     }
 
-    return {
-      success: true,
-      totalCount,
-    };
+    return totalCount;
+  };
+
+  try {
+    const count = await testSingleUrl(baseUrl);
+    return { success: true, totalCount: count };
   } catch (err: any) {
+    // If testing proxy and failed, try direct Tailscale URL as fallback
+    if (baseUrl === '/api/sql') {
+      try {
+        const count = await testSingleUrl(DEFAULT_SQL_BASE_URL);
+        return { success: true, totalCount: count };
+      } catch {}
+    }
     return {
       success: false,
       error: err.message || 'Unable to connect to SQL server',
@@ -185,16 +196,22 @@ export function sqlRowToAssetRecord(row: any, idx: number): AssetRecord {
 /**
  * Fetch all assets from PostgreSQL via PostgREST
  * Supports progressive callback so the UI displays the first batch instantly.
+ * Automatically tries primary URL (/api/sql) and falls back to direct Tailscale URL.
  */
 export async function fetchSQLAssets(
   limit = 5000,
   onProgress?: (loadedCount: number, records: AssetRecord[], total?: number) => void
 ): Promise<AssetRecord[]> {
-  const baseUrl = getSQLBaseUrl();
+  const primaryBaseUrl = getSQLBaseUrl();
+  const fallbackBaseUrl = primaryBaseUrl === '/api/sql' ? DEFAULT_SQL_BASE_URL : '/api/sql';
   const token = getSQLToken();
 
-  const fetchChunk = async (chunkLimit: number, chunkOffset: number): Promise<{ rows: any[]; totalCount?: number }> => {
-    const url = `${baseUrl}/assets?order=modified_ts.desc.nullslast&limit=${chunkLimit}&offset=${chunkOffset}&select=${ASSET_SELECT_FIELDS}`;
+  const fetchChunkFromUrl = async (
+    targetBaseUrl: string,
+    chunkLimit: number,
+    chunkOffset: number
+  ): Promise<{ rows: any[]; totalCount?: number }> => {
+    const url = `${targetBaseUrl}/assets?order=modified_ts.desc.nullslast&limit=${chunkLimit}&offset=${chunkOffset}&select=${ASSET_SELECT_FIELDS}`;
 
     const res = await fetch(url, {
       method: 'GET',
@@ -212,7 +229,7 @@ export async function fetchSQLAssets(
       const errText = await res.text().catch(() => '');
       if (errText.includes('<!doctype') || errText.includes('<html')) {
         throw new Error(
-          `SQL endpoint returned an HTML error page (HTTP ${res.status}). Verify connection to ${baseUrl}`
+          `SQL endpoint returned an HTML error page (HTTP ${res.status}). Verify connection to ${targetBaseUrl}`
         );
       }
       throw new Error(
@@ -223,7 +240,7 @@ export async function fetchSQLAssets(
     if (!contentType.includes('application/json')) {
       const textPreview = (await res.text().catch(() => '')).slice(0, 150);
       throw new Error(
-        `SQL Server returned HTML instead of JSON (${textPreview.slice(0, 50)}...). Ensure endpoint is ${DEFAULT_SQL_BASE_URL}`
+        `SQL Server returned HTML instead of JSON (${textPreview.slice(0, 50)}...). Endpoint: ${targetBaseUrl}`
       );
     }
 
@@ -240,6 +257,21 @@ export async function fetchSQLAssets(
     }
 
     return { rows, totalCount };
+  };
+
+  // Helper to fetch with fallback
+  let activeBaseUrl = primaryBaseUrl;
+  const fetchChunk = async (chunkLimit: number, chunkOffset: number) => {
+    try {
+      return await fetchChunkFromUrl(activeBaseUrl, chunkLimit, chunkOffset);
+    } catch (err: any) {
+      if (activeBaseUrl !== fallbackBaseUrl) {
+        console.warn(`Primary SQL URL (${activeBaseUrl}) failed (${err.message}), trying fallback (${fallbackBaseUrl})...`);
+        activeBaseUrl = fallbackBaseUrl;
+        return await fetchChunkFromUrl(activeBaseUrl, chunkLimit, chunkOffset);
+      }
+      throw err;
+    }
   };
 
   // 1. Fetch initial chunk (1,000 items) for ultra-fast startup
@@ -283,25 +315,37 @@ export async function fetchSQLAssets(
  * Fetch a single asset by asset_id from PostgreSQL
  */
 export async function getSQLAsset(assetId: string): Promise<AssetRecordData | null> {
-  const baseUrl = getSQLBaseUrl();
+  const primaryBaseUrl = getSQLBaseUrl();
+  const fallbackBaseUrl = primaryBaseUrl === '/api/sql' ? DEFAULT_SQL_BASE_URL : '/api/sql';
   const token = getSQLToken();
 
-  const url = `${baseUrl}/assets?asset_id=eq.${encodeURIComponent(assetId)}`;
-  const res = await fetch(url, {
-    method: 'GET',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: 'application/json',
-    },
-  });
+  const fetchAsset = async (targetBase: string) => {
+    const url = `${targetBase}/assets?asset_id=eq.${encodeURIComponent(assetId)}`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+      },
+    });
 
-  const contentType = res.headers.get('content-type') || '';
-  if (!res.ok || !contentType.includes('application/json')) {
-    throw new Error(`Failed to fetch asset ${assetId}: HTTP ${res.status}`);
+    const contentType = res.headers.get('content-type') || '';
+    if (!res.ok || !contentType.includes('application/json')) {
+      throw new Error(`Failed to fetch asset ${assetId}: HTTP ${res.status}`);
+    }
+
+    const list = await res.json();
+    return list && list.length > 0 ? list[0] : null;
+  };
+
+  try {
+    return await fetchAsset(primaryBaseUrl);
+  } catch (err) {
+    if (primaryBaseUrl !== fallbackBaseUrl) {
+      return await fetchAsset(fallbackBaseUrl);
+    }
+    throw err;
   }
-
-  const list = await res.json();
-  return list && list.length > 0 ? list[0] : null;
 }
 
 /**
@@ -315,7 +359,8 @@ export async function updateSQLAsset(
     throw new Error('Cannot update asset without a valid asset_id');
   }
 
-  const baseUrl = getSQLBaseUrl();
+  const primaryBaseUrl = getSQLBaseUrl();
+  const fallbackBaseUrl = primaryBaseUrl === '/api/sql' ? DEFAULT_SQL_BASE_URL : '/api/sql';
   const token = getSQLToken();
 
   // Automatically update modified_ts to current timestamp if not provided
@@ -324,35 +369,46 @@ export async function updateSQLAsset(
     modified_ts: new Date().toISOString(),
   };
 
-  const url = `${baseUrl}/assets?asset_id=eq.${encodeURIComponent(assetId.trim())}`;
+  const patchAsset = async (targetBase: string) => {
+    const url = `${targetBase}/assets?asset_id=eq.${encodeURIComponent(assetId.trim())}`;
 
-  const res = await fetch(url, {
-    method: 'PATCH',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-      Prefer: 'return=representation',
-    },
-    body: JSON.stringify(payload),
-  });
+    const res = await fetch(url, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        Prefer: 'return=representation',
+      },
+      body: JSON.stringify(payload),
+    });
 
-  const contentType = res.headers.get('content-type') || '';
+    const contentType = res.headers.get('content-type') || '';
 
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    throw new Error(
-      `Failed to update asset in SQL server (HTTP ${res.status}): ${errText || res.statusText}`
-    );
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      throw new Error(
+        `Failed to update asset in SQL server (HTTP ${res.status}): ${errText || res.statusText}`
+      );
+    }
+
+    if (!contentType.includes('application/json')) {
+      throw new Error('Server returned non-JSON response when updating asset.');
+    }
+
+    const list = await res.json();
+    if (!Array.isArray(list) || list.length === 0) {
+      throw new Error(`Asset ${assetId} not found or no changes were returned.`);
+    }
+
+    return list[0];
+  };
+
+  try {
+    return await patchAsset(primaryBaseUrl);
+  } catch (err) {
+    if (primaryBaseUrl !== fallbackBaseUrl) {
+      return await patchAsset(fallbackBaseUrl);
+    }
+    throw err;
   }
-
-  if (!contentType.includes('application/json')) {
-    throw new Error('Server returned non-JSON response when updating asset.');
-  }
-
-  const list = await res.json();
-  if (!Array.isArray(list) || list.length === 0) {
-    throw new Error(`Asset ${assetId} not found or no changes were returned.`);
-  }
-
-  return list[0];
 }
